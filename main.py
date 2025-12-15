@@ -172,7 +172,8 @@ async def get_vendas_realtime(secret_key: str = Depends(verify_secret_key)):
         WHERE iv.datahora >= %s
           AND iv.datahora <= %s
           AND iv.status = 'F'
-        GROUP BY 1, 2;
+        GROUP BY 1, 2
+        ORDER BY venda_total DESC;
     """
 
     try:
