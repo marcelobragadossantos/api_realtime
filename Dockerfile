@@ -17,5 +17,8 @@ COPY . .
 # Expor porta
 EXPOSE 8083
 
+# Variavel de ambiente para porta (pode ser sobrescrita no EasyPanel)
+ENV PORT=8083
+
 # Comando para iniciar a aplicação
-CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8083"]
+CMD uvicorn main:app --host 0.0.0.0 --port $PORT
