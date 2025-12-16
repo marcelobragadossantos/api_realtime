@@ -54,7 +54,7 @@ CACHE_KEY_PREFIX = "vendas_realtime"
 class VendaItem(BaseModel):
     codigo: str
     loja: str
-    numero_vendas: int
+    numero_vendas: int = 0  # Default para compatibilidade com cache antigo
     total_quantidade: float
     venda_total: float
 
