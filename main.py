@@ -1,4 +1,5 @@
 from fastapi import FastAPI, HTTPException, Header, Depends, Query
+from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from typing import List, Optional
 import psycopg2
@@ -16,6 +17,15 @@ app = FastAPI(
     title="API Vendas Real Time",
     description="API para consultar vendas por loja com filtros de data",
     version="1.1.0"
+)
+
+# Configuração CORS
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=False,
+    allow_methods=["*"],
+    allow_headers=["*"],
 )
 
 # Configurações do banco de dados
