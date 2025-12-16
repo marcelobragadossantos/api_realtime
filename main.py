@@ -1,6 +1,6 @@
-from fastapi import FastAPI, HTTPException, Header, Depends
+from fastapi import FastAPI, HTTPException, Header, Depends, Query
 from pydantic import BaseModel
-from typing import List
+from typing import List, Optional
 import psycopg2
 from psycopg2.extras import RealDictCursor
 from datetime import datetime, date, timezone, timedelta
@@ -14,8 +14,8 @@ BRASILIA_TZ = timezone(timedelta(hours=-3))
 
 app = FastAPI(
     title="API Vendas Real Time",
-    description="API para consultar vendas do dia atual por loja",
-    version="1.0.0"
+    description="API para consultar vendas por loja com filtros de data",
+    version="1.1.0"
 )
 
 # Configurações do banco de dados
@@ -37,7 +37,7 @@ REDIS_CONFIG = {
 
 SECRET_KEY = os.getenv("SECRET_KEY")
 CACHE_TTL = 300  # 5 minutos em segundos
-CACHE_KEY = "vendas_realtime"
+CACHE_KEY_PREFIX = "vendas_realtime"
 
 
 # Models
@@ -97,12 +97,17 @@ def get_db_connection():
             conn.close()
 
 
-def get_cached_data(redis_client):
+def get_cache_key(ts_start: str, ts_end: str) -> str:
+    """Gera chave de cache única para o período"""
+    return f"{CACHE_KEY_PREFIX}:{ts_start}:{ts_end}"
+
+
+def get_cached_data(redis_client, cache_key: str):
     """Busca dados do cache Redis"""
     if redis_client is None:
         return None
     try:
-        cached = redis_client.get(CACHE_KEY)
+        cached = redis_client.get(cache_key)
         if cached:
             return json.loads(cached)
     except Exception as e:
@@ -110,12 +115,12 @@ def get_cached_data(redis_client):
     return None
 
 
-def set_cached_data(redis_client, data):
+def set_cached_data(redis_client, cache_key: str, data):
     """Salva dados no cache Redis com TTL de 5 minutos"""
     if redis_client is None:
         return
     try:
-        redis_client.setex(CACHE_KEY, CACHE_TTL, json.dumps(data))
+        redis_client.setex(cache_key, CACHE_TTL, json.dumps(data))
     except Exception as e:
         print(f"Erro ao salvar cache: {e}")
 
@@ -135,6 +140,17 @@ def today_brasilia():
     return now_brasilia().date()
 
 
+def parse_date(date_str: str) -> date:
+    """Converte string para date no formato YYYY-MM-DD"""
+    try:
+        return datetime.strptime(date_str, "%Y-%m-%d").date()
+    except ValueError:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Formato de data inválido: {date_str}. Use o formato YYYY-MM-DD"
+        )
+
+
 @app.get("/health")
 async def health_check():
     redis_client = get_redis_client()
@@ -147,18 +163,58 @@ async def health_check():
 
 
 @app.get("/vendas-realtime", response_model=VendasResponse)
-async def get_vendas_realtime(secret_key: str = Depends(verify_secret_key)):
+async def get_vendas_realtime(
+    secret_key: str = Depends(verify_secret_key),
+    data: Optional[str] = Query(None, description="Data específica (YYYY-MM-DD)"),
+    data_inicio: Optional[str] = Query(None, description="Data início do período (YYYY-MM-DD)"),
+    data_fim: Optional[str] = Query(None, description="Data fim do período (YYYY-MM-DD)")
+):
     """
-    Consulta as vendas do dia atual agrupadas por loja.
+    Consulta as vendas agrupadas por loja.
+
+    **Parâmetros de data (opcionais):**
+    - Sem parâmetros: retorna vendas do dia atual
+    - `data`: retorna vendas de uma data específica
+    - `data_inicio` + `data_fim`: retorna vendas somadas do período
 
     Os dados são cacheados no Redis por 5 minutos para não sobrecarregar o banco.
 
     Requer header X-Secret-Key com a chave de autenticação.
     """
+    # Determinar período de consulta
+    if data:
+        # Data específica
+        data_parsed = parse_date(data)
+        ts_start = datetime.combine(data_parsed, datetime.min.time()).strftime("%Y-%m-%d %H:%M:%S")
+        ts_end = datetime.combine(data_parsed, datetime.max.time()).strftime("%Y-%m-%d %H:%M:%S")
+    elif data_inicio and data_fim:
+        # Range de datas
+        data_inicio_parsed = parse_date(data_inicio)
+        data_fim_parsed = parse_date(data_fim)
+        if data_inicio_parsed > data_fim_parsed:
+            raise HTTPException(
+                status_code=400,
+                detail="data_inicio não pode ser maior que data_fim"
+            )
+        ts_start = datetime.combine(data_inicio_parsed, datetime.min.time()).strftime("%Y-%m-%d %H:%M:%S")
+        ts_end = datetime.combine(data_fim_parsed, datetime.max.time()).strftime("%Y-%m-%d %H:%M:%S")
+    elif data_inicio or data_fim:
+        # Apenas um dos parâmetros de range foi informado
+        raise HTTPException(
+            status_code=400,
+            detail="Para consultar um período, informe data_inicio e data_fim"
+        )
+    else:
+        # Dia atual (comportamento padrão)
+        hoje = today_brasilia()
+        ts_start = datetime.combine(hoje, datetime.min.time()).strftime("%Y-%m-%d %H:%M:%S")
+        ts_end = datetime.combine(hoje, datetime.max.time()).strftime("%Y-%m-%d %H:%M:%S")
+
     redis_client = get_redis_client()
+    cache_key = get_cache_key(ts_start, ts_end)
 
     # Tentar buscar do cache primeiro
-    cached_data = get_cached_data(redis_client)
+    cached_data = get_cached_data(redis_client, cache_key)
     if cached_data:
         return VendasResponse(
             data_consulta=cached_data["data_consulta"],
@@ -168,11 +224,6 @@ async def get_vendas_realtime(secret_key: str = Depends(verify_secret_key)):
             fonte="cache",
             vendas=[VendaItem(**v) for v in cached_data["vendas"]]
         )
-
-    # Se não tem cache, buscar do banco (usando horário de Brasília)
-    hoje = today_brasilia()
-    ts_start = datetime.combine(hoje, datetime.min.time()).strftime("%Y-%m-%d %H:%M:%S")
-    ts_end = datetime.combine(hoje, datetime.max.time()).strftime("%Y-%m-%d %H:%M:%S")
 
     sql = """
         SELECT
@@ -215,7 +266,7 @@ async def get_vendas_realtime(secret_key: str = Depends(verify_secret_key)):
             "total_registros": len(vendas),
             "vendas": [v.model_dump() for v in vendas]
         }
-        set_cached_data(redis_client, cache_data)
+        set_cached_data(redis_client, cache_key, cache_data)
 
         return VendasResponse(
             data_consulta=data_consulta,
@@ -235,15 +286,18 @@ async def get_vendas_realtime(secret_key: str = Depends(verify_secret_key)):
 @app.delete("/cache")
 async def clear_cache(secret_key: str = Depends(verify_secret_key)):
     """
-    Limpa o cache do Redis forçando uma nova consulta ao banco.
+    Limpa todo o cache do Redis forçando novas consultas ao banco.
 
     Requer header X-Secret-Key com a chave de autenticação.
     """
     redis_client = get_redis_client()
     if redis_client:
         try:
-            redis_client.delete(CACHE_KEY)
-            return {"message": "Cache limpo com sucesso"}
+            # Buscar e deletar todas as chaves com o prefixo
+            keys = redis_client.keys(f"{CACHE_KEY_PREFIX}:*")
+            if keys:
+                redis_client.delete(*keys)
+            return {"message": f"Cache limpo com sucesso ({len(keys)} chaves removidas)"}
         except Exception as e:
             raise HTTPException(status_code=500, detail=f"Erro ao limpar cache: {str(e)}")
     return {"message": "Redis não disponível, nada a limpar"}
