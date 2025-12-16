@@ -54,6 +54,7 @@ CACHE_KEY_PREFIX = "vendas_realtime"
 class VendaItem(BaseModel):
     codigo: str
     loja: str
+    numero_vendas: int
     total_quantidade: float
     venda_total: float
 
@@ -239,6 +240,7 @@ async def get_vendas_realtime(
         SELECT
             u.codigo,
             u.nome as loja,
+            COUNT(DISTINCT iv.vendaid) as numero_vendas,
             SUM(iv.quantidade) as total_quantidade,
             SUM(iv.valortotal::double precision) AS venda_total
         FROM itemvenda iv
@@ -260,6 +262,7 @@ async def get_vendas_realtime(
             VendaItem(
                 codigo=str(row["codigo"] or ""),
                 loja=str(row["loja"] or ""),
+                numero_vendas=int(row["numero_vendas"] or 0),
                 total_quantidade=round(float(row["total_quantidade"] or 0), 2),
                 venda_total=round(float(row["venda_total"] or 0), 2)
             )
