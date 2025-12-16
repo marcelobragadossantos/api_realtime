@@ -11,6 +11,23 @@
 
 ---
 
+## Parametros de Data (Query Params)
+
+A API aceita parametros opcionais para filtrar por data:
+
+| Parametro | Formato | Descricao |
+|-----------|---------|-----------|
+| `data` | YYYY-MM-DD | Data especifica |
+| `data_inicio` | YYYY-MM-DD | Inicio do periodo |
+| `data_fim` | YYYY-MM-DD | Fim do periodo |
+
+**Exemplos de URL:**
+- Dia atual: `/vendas-realtime`
+- Data especifica: `/vendas-realtime?data=2025-12-10`
+- Periodo: `/vendas-realtime?data_inicio=2025-12-01&data_fim=2025-12-15`
+
+---
+
 ## Passo a Passo no Power BI Desktop
 
 ### 1. Abrir o Editor de Consultas
@@ -19,7 +36,7 @@
 2. Clique em **Obter Dados** > **Consulta em Branco**
 3. No Editor de Consultas, clique em **Editor Avancado**
 
-### 2. Codigo M para Conectar na API
+### 2. Codigo M - Vendas do Dia Atual
 
 Cole o seguinte codigo no Editor Avancado:
 
@@ -74,9 +91,150 @@ Quando o Power BI pedir credenciais:
 
 ---
 
+## Codigo M - Data Especifica
+
+Para consultar uma data especifica:
+
+```m
+let
+    // Configuracoes
+    url = "https://SUA-URL-API.com/vendas-realtime",
+    secretKey = "c456b90d8e8a11371b63822d3f08892f14f47e986eae0d49124dea3ee5eeea42",
+
+    // Data especifica (formato YYYY-MM-DD)
+    dataConsulta = "2025-12-10",
+
+    // Requisicao
+    Source = Json.Document(
+        Web.Contents(
+            url,
+            [
+                Query = [data = dataConsulta],
+                Headers = [#"X-Secret-Key" = secretKey]
+            ]
+        )
+    ),
+
+    vendas = Source[vendas],
+    TabelaVendas = Table.FromList(vendas, Splitter.SplitByNothing(), null, null, ExtraValues.Error),
+    Expandido = Table.ExpandRecordColumn(TabelaVendas, "Column1", {"codigo", "loja", "total_quantidade", "venda_total"}),
+    TiposDefinidos = Table.TransformColumnTypes(Expandido, {
+        {"codigo", type text},
+        {"loja", type text},
+        {"total_quantidade", type number},
+        {"venda_total", Currency.Type}
+    })
+in
+    TiposDefinidos
+```
+
+---
+
+## Codigo M - Periodo de Datas (Soma Total)
+
+Para consultar um periodo e obter a soma total:
+
+```m
+let
+    // Configuracoes
+    url = "https://SUA-URL-API.com/vendas-realtime",
+    secretKey = "c456b90d8e8a11371b63822d3f08892f14f47e986eae0d49124dea3ee5eeea42",
+
+    // Periodo (formato YYYY-MM-DD)
+    dataInicio = "2025-12-01",
+    dataFim = "2025-12-15",
+
+    // Requisicao
+    Source = Json.Document(
+        Web.Contents(
+            url,
+            [
+                Query = [
+                    data_inicio = dataInicio,
+                    data_fim = dataFim
+                ],
+                Headers = [#"X-Secret-Key" = secretKey]
+            ]
+        )
+    ),
+
+    vendas = Source[vendas],
+    TabelaVendas = Table.FromList(vendas, Splitter.SplitByNothing(), null, null, ExtraValues.Error),
+    Expandido = Table.ExpandRecordColumn(TabelaVendas, "Column1", {"codigo", "loja", "total_quantidade", "venda_total"}),
+    TiposDefinidos = Table.TransformColumnTypes(Expandido, {
+        {"codigo", type text},
+        {"loja", type text},
+        {"total_quantidade", type number},
+        {"venda_total", Currency.Type}
+    })
+in
+    TiposDefinidos
+```
+
+---
+
+## Codigo M - Com Parametros Dinamicos
+
+Para criar parametros no Power BI e permitir selecao de datas:
+
+### 1. Criar Parametros no Power BI
+
+1. Va em **Gerenciar Parametros** > **Novo Parametro**
+2. Crie os parametros:
+   - `pDataInicio` (tipo Data)
+   - `pDataFim` (tipo Data)
+
+### 2. Codigo M com Parametros
+
+```m
+let
+    // Configuracoes
+    url = "https://SUA-URL-API.com/vendas-realtime",
+    secretKey = "c456b90d8e8a11371b63822d3f08892f14f47e986eae0d49124dea3ee5eeea42",
+
+    // Converter parametros para formato YYYY-MM-DD
+    dataInicio = Date.ToText(pDataInicio, "yyyy-MM-dd"),
+    dataFim = Date.ToText(pDataFim, "yyyy-MM-dd"),
+
+    // Requisicao
+    Source = Json.Document(
+        Web.Contents(
+            url,
+            [
+                Query = [
+                    data_inicio = dataInicio,
+                    data_fim = dataFim
+                ],
+                Headers = [#"X-Secret-Key" = secretKey]
+            ]
+        )
+    ),
+
+    vendas = Source[vendas],
+    TabelaVendas = Table.FromList(vendas, Splitter.SplitByNothing(), null, null, ExtraValues.Error),
+    Expandido = Table.ExpandRecordColumn(TabelaVendas, "Column1", {"codigo", "loja", "total_quantidade", "venda_total"}),
+
+    // Adicionar colunas de periodo
+    ComPeriodoInicio = Table.AddColumn(Expandido, "periodo_inicio", each Source[periodo_inicio]),
+    ComPeriodoFim = Table.AddColumn(ComPeriodoInicio, "periodo_fim", each Source[periodo_fim]),
+
+    TiposDefinidos = Table.TransformColumnTypes(ComPeriodoFim, {
+        {"codigo", type text},
+        {"loja", type text},
+        {"total_quantidade", type number},
+        {"venda_total", Currency.Type},
+        {"periodo_inicio", type text},
+        {"periodo_fim", type text}
+    })
+in
+    TiposDefinidos
+```
+
+---
+
 ## Codigo Alternativo - Com Metadados
 
-Se quiser incluir data da consulta e periodo:
+Se quiser incluir data da consulta e fonte:
 
 ```m
 let
@@ -153,7 +311,7 @@ A API tem cache de **5 minutos**. Isso significa:
 | `codigo` | Texto | Codigo da loja |
 | `loja` | Texto | Nome da loja |
 | `total_quantidade` | Numero | Quantidade total de itens vendidos |
-| `venda_total` | Moeda | Valor total de vendas |
+| `venda_total` | Moeda | Valor total de vendas (2 casas decimais) |
 
 ---
 
@@ -161,23 +319,23 @@ A API tem cache de **5 minutos**. Isso significa:
 
 ```json
 {
-  "data_consulta": "2025-01-15T10:30:00",
-  "periodo_inicio": "2025-01-15 00:00:00",
-  "periodo_fim": "2025-01-15 23:59:59",
+  "data_consulta": "2025-12-15T21:30:00-03:00",
+  "periodo_inicio": "2025-12-01 00:00:00",
+  "periodo_fim": "2025-12-15 23:59:59",
   "total_registros": 5,
   "fonte": "database",
   "vendas": [
     {
       "codigo": "001",
       "loja": "Loja Centro",
-      "total_quantidade": 500,
-      "venda_total": 15000.00
+      "total_quantidade": 5000.00,
+      "venda_total": 150000.00
     },
     {
       "codigo": "002",
       "loja": "Loja Shopping",
-      "total_quantidade": 350,
-      "venda_total": 12000.00
+      "total_quantidade": 3500.00,
+      "venda_total": 120000.00
     }
   ]
 }
@@ -189,16 +347,31 @@ A API tem cache de **5 minutos**. Isso significa:
 
 Antes de configurar no Power BI, teste a API com curl ou Postman:
 
-### Curl
+### Curl - Dia Atual
 ```bash
 curl -X GET "https://SUA-URL-API.com/vendas-realtime" \
+  -H "X-Secret-Key: c456b90d8e8a11371b63822d3f08892f14f47e986eae0d49124dea3ee5eeea42"
+```
+
+### Curl - Data Especifica
+```bash
+curl -X GET "https://SUA-URL-API.com/vendas-realtime?data=2025-12-10" \
+  -H "X-Secret-Key: c456b90d8e8a11371b63822d3f08892f14f47e986eae0d49124dea3ee5eeea42"
+```
+
+### Curl - Periodo
+```bash
+curl -X GET "https://SUA-URL-API.com/vendas-realtime?data_inicio=2025-12-01&data_fim=2025-12-15" \
   -H "X-Secret-Key: c456b90d8e8a11371b63822d3f08892f14f47e986eae0d49124dea3ee5eeea42"
 ```
 
 ### Postman
 1. Metodo: GET
 2. URL: `https://SUA-URL-API.com/vendas-realtime`
-3. Headers:
+3. Params (opcional):
+   - `data`: `2025-12-10` OU
+   - `data_inicio`: `2025-12-01` + `data_fim`: `2025-12-15`
+4. Headers:
    - Key: `X-Secret-Key`
    - Value: `c456b90d8e8a11371b63822d3f08892f14f47e986eae0d49124dea3ee5eeea42`
 
@@ -209,9 +382,10 @@ curl -X GET "https://SUA-URL-API.com/vendas-realtime" \
 | Erro | Solucao |
 |------|---------|
 | 401 Unauthorized | Verifique se o X-Secret-Key esta correto |
+| 400 Bad Request | Verifique o formato da data (YYYY-MM-DD) |
 | 500 Internal Server Error | Verifique as variaveis de ambiente no EasyPanel |
 | Timeout | A API pode estar iniciando, aguarde alguns segundos |
-| Dados vazios | Pode nao ter vendas no dia atual |
+| Dados vazios | Pode nao ter vendas no periodo solicitado |
 
 ---
 
@@ -219,3 +393,4 @@ curl -X GET "https://SUA-URL-API.com/vendas-realtime" \
 
 - Endpoint de health check: `GET /health`
 - Limpar cache manualmente: `DELETE /cache` (com header X-Secret-Key)
+- Documentacao interativa: `GET /docs` (Swagger UI)
