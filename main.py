@@ -3,11 +3,14 @@ from pydantic import BaseModel
 from typing import List
 import psycopg2
 from psycopg2.extras import RealDictCursor
-from datetime import datetime, date
+from datetime import datetime, date, timezone, timedelta
 import os
 import json
 import redis
 from contextlib import contextmanager
+
+# Timezone de Brasília (UTC-3)
+BRASILIA_TZ = timezone(timedelta(hours=-3))
 
 app = FastAPI(
     title="API Vendas Real Time",
@@ -122,13 +125,23 @@ async def root():
     return {"message": "API Vendas Real Time", "status": "online"}
 
 
+def now_brasilia():
+    """Retorna datetime atual no fuso horário de Brasília"""
+    return datetime.now(BRASILIA_TZ)
+
+
+def today_brasilia():
+    """Retorna date atual no fuso horário de Brasília"""
+    return now_brasilia().date()
+
+
 @app.get("/health")
 async def health_check():
     redis_client = get_redis_client()
     redis_status = "connected" if redis_client else "disconnected"
     return {
         "status": "healthy",
-        "timestamp": datetime.now().isoformat(),
+        "timestamp": now_brasilia().isoformat(),
         "redis": redis_status
     }
 
@@ -156,8 +169,8 @@ async def get_vendas_realtime(secret_key: str = Depends(verify_secret_key)):
             vendas=[VendaItem(**v) for v in cached_data["vendas"]]
         )
 
-    # Se não tem cache, buscar do banco
-    hoje = date.today()
+    # Se não tem cache, buscar do banco (usando horário de Brasília)
+    hoje = today_brasilia()
     ts_start = datetime.combine(hoje, datetime.min.time()).strftime("%Y-%m-%d %H:%M:%S")
     ts_end = datetime.combine(hoje, datetime.max.time()).strftime("%Y-%m-%d %H:%M:%S")
 
@@ -186,13 +199,13 @@ async def get_vendas_realtime(secret_key: str = Depends(verify_secret_key)):
             VendaItem(
                 codigo=str(row["codigo"] or ""),
                 loja=str(row["loja"] or ""),
-                total_quantidade=float(row["total_quantidade"] or 0),
-                venda_total=float(row["venda_total"] or 0)
+                total_quantidade=round(float(row["total_quantidade"] or 0), 2),
+                venda_total=round(float(row["venda_total"] or 0), 2)
             )
             for row in results
         ]
 
-        data_consulta = datetime.now().isoformat()
+        data_consulta = now_brasilia().isoformat()
 
         # Salvar no cache
         cache_data = {
