@@ -59,7 +59,6 @@ class VendaItem(BaseModel):
     total_quantidade: float
     venda_total: float
     custo: float = 0.0  # Default para compatibilidade com cache antigo
-    cmv: float = 0.0  # CMV = (Custo / Venda) * 100
     tempo_ultimo_envio: str = ""  # Default para compatibilidade com cache antigo
 
 
@@ -268,24 +267,19 @@ async def get_vendas_realtime(
                 cursor.execute(sql, (ts_start, ts_end))
                 results = cursor.fetchall()
 
-        vendas = []
-        for row in results:
-            venda_total = round(float(row["venda_total"] or 0), 2)
-            custo = round(float(row["custo"] or 0), 2)
-            # CMV = (Custo / Venda) * 100
-            cmv = round((custo / venda_total) * 100, 2) if venda_total > 0 else 0.0
-
-            vendas.append(VendaItem(
+        vendas = [
+            VendaItem(
                 codigo=str(row["codigo"] or ""),
                 loja=str(row["loja"] or ""),
                 regional=str(row["regional"] or ""),
                 numero_vendas=int(row["numero_vendas"] or 0),
                 total_quantidade=round(float(row["total_quantidade"] or 0), 2),
-                venda_total=venda_total,
-                custo=custo,
-                cmv=cmv,
+                venda_total=round(float(row["venda_total"] or 0), 2),
+                custo=round(float(row["custo"] or 0), 2),
                 tempo_ultimo_envio=str(row["tempo_ultimo_envio"] or "")
-            ))
+            )
+            for row in results
+        ]
 
         data_consulta = now_brasilia().isoformat()
 
