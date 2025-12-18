@@ -247,7 +247,7 @@ async def get_vendas_realtime(
             COUNT(DISTINCT iv.vendaid) as numero_vendas,
             SUM(iv.quantidade) as total_quantidade,
             SUM(iv.valortotal::double precision) AS venda_total,
-            SUM(m.custo::double precision) AS custo,
+            SUM(m.custo * iv.quantidade::double precision) AS custo,
             vm.tempoultimoenvio as tempo_ultimo_envio
         FROM itemvenda iv
         LEFT JOIN unidadenegocio u ON u.id = iv.unidadenegocioid
