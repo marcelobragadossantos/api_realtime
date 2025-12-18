@@ -58,6 +58,8 @@ class VendaItem(BaseModel):
     numero_vendas: int = 0  # Default para compatibilidade com cache antigo
     total_quantidade: float
     venda_total: float
+    custo: float = 0.0  # Default para compatibilidade com cache antigo
+    cmv: float = 0.0  # CMV = (Custo / Venda) * 100
     tempo_ultimo_envio: str = ""  # Default para compatibilidade com cache antigo
 
 
@@ -246,15 +248,17 @@ async def get_vendas_realtime(
             COUNT(DISTINCT iv.vendaid) as numero_vendas,
             SUM(iv.quantidade) as total_quantidade,
             SUM(iv.valortotal::double precision) AS venda_total,
+            SUM(m.custo::double precision) AS custo,
             vm.tempoultimoenvio as tempo_ultimo_envio
         FROM itemvenda iv
         LEFT JOIN unidadenegocio u ON u.id = iv.unidadenegocioid
         LEFT JOIN grupounidadenegocio g ON g.id = u.grupounidadenegocioid
         LEFT JOIN v_monitorsincronizacao vm ON vm.unidadenegocioid = u.id
+        LEFT JOIN movimentacaoestoque m ON m.id = iv.movimentacaoestoqueid
         WHERE iv.datahora >= %s
           AND iv.datahora <= %s
           AND iv.status = 'F'
-        GROUP BY 1, 2, 3, 7
+        GROUP BY 1, 2, 3, 8
         ORDER BY venda_total DESC;
     """
 
@@ -264,18 +268,24 @@ async def get_vendas_realtime(
                 cursor.execute(sql, (ts_start, ts_end))
                 results = cursor.fetchall()
 
-        vendas = [
-            VendaItem(
+        vendas = []
+        for row in results:
+            venda_total = round(float(row["venda_total"] or 0), 2)
+            custo = round(float(row["custo"] or 0), 2)
+            # CMV = (Custo / Venda) * 100
+            cmv = round((custo / venda_total) * 100, 2) if venda_total > 0 else 0.0
+
+            vendas.append(VendaItem(
                 codigo=str(row["codigo"] or ""),
                 loja=str(row["loja"] or ""),
                 regional=str(row["regional"] or ""),
                 numero_vendas=int(row["numero_vendas"] or 0),
                 total_quantidade=round(float(row["total_quantidade"] or 0), 2),
-                venda_total=round(float(row["venda_total"] or 0), 2),
+                venda_total=venda_total,
+                custo=custo,
+                cmv=cmv,
                 tempo_ultimo_envio=str(row["tempo_ultimo_envio"] or "")
-            )
-            for row in results
-        ]
+            ))
 
         data_consulta = now_brasilia().isoformat()
 
