@@ -1,4 +1,4 @@
-from fastapi import FastAPI, HTTPException, Header, Depends, Query
+from fastapi import FastAPI, HTTPException, Header, Depends, Query, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from typing import List, Optional
@@ -17,7 +17,7 @@ BRASILIA_TZ = timezone(timedelta(hours=-3))
 app = FastAPI(
     title="API Vendas Real Time",
     description="API para consultar vendas por loja com filtros de data",
-    version="1.2.0"
+    version="1.2.1"
 )
 
 # Configuração CORS
@@ -63,14 +63,6 @@ class VendaItem(BaseModel):
     tempo_ultimo_envio: str = ""
 
 
-class PeriodoVendas(BaseModel):
-    periodo_inicio: str
-    periodo_fim: str
-    total_registros: int
-    fonte: str
-    vendas: List[VendaItem]
-
-
 class VendasResponse(BaseModel):
     data_consulta: str
     periodo_inicio: str
@@ -78,7 +70,6 @@ class VendasResponse(BaseModel):
     total_registros: int
     fonte: str
     vendas: List[VendaItem]
-    vendas_mes: Optional[PeriodoVendas] = None  # Dados do mês (quando consulta é de um dia)
 
 
 # Redis connection
@@ -256,6 +247,27 @@ def get_vendas_periodo(redis_client, ts_start: str, ts_end: str) -> tuple:
     return vendas, "database"
 
 
+def cache_month_data_background(data_referencia: date):
+    """
+    Função executada em background para cachear dados do mês.
+    """
+    try:
+        redis_client = get_redis_client()
+        primeiro_dia, ultimo_dia = get_month_range(data_referencia)
+        ts_mes_start = datetime.combine(primeiro_dia, datetime.min.time()).strftime("%Y-%m-%d %H:%M:%S")
+        ts_mes_end = datetime.combine(ultimo_dia, datetime.max.time()).strftime("%Y-%m-%d %H:%M:%S")
+
+        cache_key = get_cache_key(ts_mes_start, ts_mes_end)
+
+        # Só busca se não estiver em cache
+        if not get_cached_data(redis_client, cache_key):
+            print(f"Background: Cacheando dados do mês {data_referencia.month}/{data_referencia.year}")
+            get_vendas_periodo(redis_client, ts_mes_start, ts_mes_end)
+            print(f"Background: Cache do mês concluído")
+    except Exception as e:
+        print(f"Erro ao cachear dados do mês em background: {e}")
+
+
 @app.get("/health")
 async def health_check():
     redis_client = get_redis_client()
@@ -269,6 +281,7 @@ async def health_check():
 
 @app.get("/vendas-realtime", response_model=VendasResponse)
 async def get_vendas_realtime(
+    background_tasks: BackgroundTasks,
     secret_key: str = Depends(verify_secret_key),
     data: Optional[str] = Query(None, description="Data específica (YYYY-MM-DD)"),
     data_inicio: Optional[str] = Query(None, description="Data início do período (YYYY-MM-DD)"),
@@ -278,12 +291,12 @@ async def get_vendas_realtime(
     Consulta as vendas agrupadas por loja.
 
     **Parâmetros de data (opcionais):**
-    - Sem parâmetros: retorna vendas do dia atual + dados do mês
-    - `data`: retorna vendas de uma data específica + dados do mês
-    - `data_inicio` + `data_fim`: retorna vendas somadas do período (sem dados do mês)
+    - Sem parâmetros: retorna vendas do dia atual
+    - `data`: retorna vendas de uma data específica
+    - `data_inicio` + `data_fim`: retorna vendas somadas do período
 
-    Quando a consulta é de um dia específico, também retorna `vendas_mes` com os dados
-    acumulados do mês correspondente (já em cache para consultas futuras).
+    Quando a consulta é de um dia específico, os dados do mês são cacheados
+    em background para acelerar futuras consultas mensais.
 
     Os dados são cacheados no Redis por 5 minutos para não sobrecarregar o banco.
 
@@ -331,23 +344,9 @@ async def get_vendas_realtime(
         vendas, fonte = get_vendas_periodo(redis_client, ts_start, ts_end)
         data_consulta = now_brasilia().isoformat()
 
-        # Se for consulta de um dia, também buscar dados do mês
-        vendas_mes = None
+        # Se for consulta de um dia, cachear dados do mês em background
         if is_single_day and data_referencia:
-            primeiro_dia, ultimo_dia = get_month_range(data_referencia)
-            ts_mes_start = datetime.combine(primeiro_dia, datetime.min.time()).strftime("%Y-%m-%d %H:%M:%S")
-            ts_mes_end = datetime.combine(ultimo_dia, datetime.max.time()).strftime("%Y-%m-%d %H:%M:%S")
-
-            # Buscar dados do mês (já salva em cache automaticamente)
-            vendas_mes_list, fonte_mes = get_vendas_periodo(redis_client, ts_mes_start, ts_mes_end)
-
-            vendas_mes = PeriodoVendas(
-                periodo_inicio=ts_mes_start,
-                periodo_fim=ts_mes_end,
-                total_registros=len(vendas_mes_list),
-                fonte=fonte_mes,
-                vendas=vendas_mes_list
-            )
+            background_tasks.add_task(cache_month_data_background, data_referencia)
 
         return VendasResponse(
             data_consulta=data_consulta,
@@ -355,8 +354,7 @@ async def get_vendas_realtime(
             periodo_fim=ts_end,
             total_registros=len(vendas),
             fonte=fonte,
-            vendas=vendas,
-            vendas_mes=vendas_mes
+            vendas=vendas
         )
 
     except HTTPException:
